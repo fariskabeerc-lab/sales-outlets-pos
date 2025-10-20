@@ -26,8 +26,8 @@ def load_price_list(file_path):
 # ================================
 # File paths
 # ================================
-sales_file = "july to sep safa2025.Xlsx"
-price_file = "price list(1).xlsx"
+sales_file = "july to sep safa2025.Xlsx"  # replace with your file
+price_file = "price list(1).xlsx"        # replace with your file
 
 sales_df = load_sales_data(sales_file)
 price_df = load_price_list(price_file)

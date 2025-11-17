@@ -1,140 +1,108 @@
 import streamlit as st
 import pandas as pd
-from itertools import combinations
-from collections import Counter
 
-st.set_page_config(page_title="POS Analytics", layout="wide")
+st.set_page_config(page_title="POS Billing Analytics", layout="wide")
 
-st.title("🛒 POS Billing Analytics Dashboard")
+# -----------------------------
+# 1. Load Data (No Uploader)
+# -----------------------------
+FILE_PATH = "PosTransactionDetails.xlsx"   # <-- Replace with your actual file path
 
-# -------------------------------------------------
-# Load Excel directly (NO UPLOADER)
-# -------------------------------------------------
-FILE_PATH = r"PosTransactionDetails.xlsx"   # <-- CHANGE THIS PATH
+@st.cache_data
+def load_data():
+    df = pd.read_excel(FILE_PATH)
 
-df = pd.read_excel(FILE_PATH)
+    # Normalize column names
+    df.columns = df.columns.str.strip().str.lower().str.replace(" ", "_")
 
-# -------------------------------------------------
-# Preprocessing
-# -------------------------------------------------
-df['Tran Date'] = pd.to_datetime(df['Tran Date'])
-df['Hour'] = df['Tran Date'].dt.hour
-df['Day'] = df['Tran Date'].dt.day_name()
-df['Date'] = df['Tran Date'].dt.date
+    # Required columns
+    required = ["barcode", "item_name", "qty", "pos_name", "tran_no", "tran_date", "rate", "item_total"]
 
+    # Verify columns
+    for col in required:
+        if col not in df.columns:
+            st.error(f"Missing column: {col}")
+            st.stop()
+
+    return df
+
+df = load_data()
 st.success("POS Data Loaded Successfully ✔")
 
-# =====================================================================
-# SECTION 1 — BASIC METRICS
-# =====================================================================
-total_sales = df['Item Total'].sum()
-total_items = df['QTY'].sum()
-total_bills = df.groupby(['POS Name', 'Tran No']).ngroups
-avg_basket_value = total_sales / total_bills
+# -----------------------------
+# 2. Basic Metrics
+# -----------------------------
+total_sales = df["item_total"].sum()
+total_bills = df.groupby(["pos_name", "tran_no"]).ngroups
+total_qty = df["qty"].sum()
+unique_items = df["item_name"].nunique()
 
 col1, col2, col3, col4 = st.columns(4)
+col1.metric("Total Sales", round(total_sales, 2))
+col2.metric("Total Bills", total_bills)
+col3.metric("Total Quantity Sold", total_qty)
+col4.metric("Unique Items", unique_items)
 
-col1.metric("💰 Total Sales", f"{total_sales:,.2f}")
-col2.metric("🧾 Total Bills", total_bills)
-col3.metric("📦 Total Quantity Sold", f"{total_items:,.0f}")
-col4.metric("🛍️ Avg Basket Value", f"{avg_basket_value:,.2f}")
+# -----------------------------
+# 3. Bill Level Metrics
+# -----------------------------
+bill_summary = df.groupby(["pos_name", "tran_no"]).agg(
+    bill_total=("item_total", "sum"),
+    items_in_bill=("qty", "sum")
+).reset_index()
 
-st.markdown("---")
+avg_basket_value = bill_summary["bill_total"].mean()
+avg_basket_size = bill_summary["items_in_bill"].mean()
 
-# =====================================================================
-# SECTION 2 — PEAK HOUR ANALYSIS
-# =====================================================================
-st.subheader("⏰ Peak Hour Sales")
+st.subheader("🛍 Basket Metrics")
+col1, col2 = st.columns(2)
+col1.metric("Average Basket Value (ABV)", round(avg_basket_value, 2))
+col2.metric("Average Basket Size", round(avg_basket_size, 2))
 
-peak_hour = df.groupby('Hour')['Tran No'].nunique().reset_index(name='Bills')
-st.bar_chart(peak_hour, x="Hour", y="Bills")
+# -----------------------------
+# 4. POS-level Sales
+# -----------------------------
+st.subheader("🏪 POS-wise Sales")
+pos_sales = df.groupby("pos_name")["item_total"].sum().reset_index()
+st.dataframe(pos_sales)
 
-st.markdown("---")
+# -----------------------------
+# 5. Item-wise Sales
+# -----------------------------
+st.subheader("📦 Item-wise Sales Summary")
+item_sales = df.groupby("item_name").agg(
+    total_qty=("qty", "sum"),
+    total_sales=("item_total", "sum")
+).sort_values(by="total_sales", ascending=False).reset_index()
 
-# =====================================================================
-# SECTION 3 — ITEM SUMMARY TABLE
-# =====================================================================
-st.subheader("📋 Item Summary")
+st.dataframe(item_sales)
 
-item_summary = df.groupby('Item Name').agg(
-    Total_QTY=('QTY', 'sum'),
-    Total_Sales=('Item Total', 'sum'),
-    Avg_Rate=('Rate', 'mean'),
-    Bills=('Tran No', 'nunique')
-).sort_values(by="Total_QTY", ascending=False)
+# -----------------------------
+# 6. Daily Sales Trend
+# -----------------------------
+df["tran_date"] = pd.to_datetime(df["tran_date"])
+daily_sales = df.groupby("tran_date")["item_total"].sum().reset_index()
 
-st.dataframe(item_summary, use_container_width=True)
-
-st.markdown("---")
-
-# =====================================================================
-# SECTION 4 — FREQUENTLY BOUGHT TOGETHER (MBA)
-# =====================================================================
-st.subheader("🤝 Frequently Bought Together (Top 20 Pairs)")
-
-baskets = df.groupby(['POS Name', 'Tran No'])['Item Name'].apply(list)
-
-pairs = []
-for items in baskets:
-    combos = combinations(sorted(set(items)), 2)
-    pairs.extend(combos)
-
-pair_counts = Counter(pairs)
-top_pairs = pd.DataFrame(pair_counts.most_common(20), columns=['Pair', 'Count'])
-
-st.dataframe(top_pairs, use_container_width=True)
-
-st.markdown("---")
-
-# =====================================================================
-# SECTION 5 — POS MACHINE PERFORMANCE
-# =====================================================================
-st.subheader("🏬 POS Machine Performance")
-
-pos_perf = df.groupby('POS Name').agg(
-    Bills=('Tran No', 'nunique'),
-    Items_Sold=('QTY', 'sum'),
-    Sales=('Item Total', 'sum')
-)
-
-st.bar_chart(pos_perf, y="Sales")
-st.dataframe(pos_perf, use_container_width=True)
-
-st.markdown("---")
-
-# =====================================================================
-# SECTION 6 — POS + TRAN NO VALIDATION
-# =====================================================================
-st.subheader("⚠️ POS and Bill Number Validation")
-
-pos_issue = df.groupby('Tran No')['POS Name'].nunique()
-pos_issue = pos_issue[pos_issue > 1]
-
-if len(pos_issue) == 0:
-    st.success("No conflicting POS–Tran No detected ✔")
-else:
-    st.error("Conflicting Bill Numbers Found ❗")
-    st.write(pos_issue)
-
-st.subheader("🔍 Missing Bill Numbers per POS")
-
-missing_report = {}
-for pos, sub in df.groupby("POS Name"):
-    bills = sorted(sub['Tran No'].unique())
-    expected = list(range(min(bills), max(bills)+1))
-    missing = sorted(set(expected) - set(bills))
-    missing_report[pos] = missing
-
-st.write(missing_report)
-
-st.markdown("---")
-
-# =====================================================================
-# SECTION 7 — DAILY SALES TREND
-# =====================================================================
 st.subheader("📈 Daily Sales Trend")
+st.line_chart(daily_sales, x="tran_date", y="item_total")
 
-daily = df.groupby('Date')['Item Total'].sum().reset_index()
-st.line_chart(daily, x="Date", y="Item Total")
+# -----------------------------
+# 7. Fast Movers / Slow Movers
+# -----------------------------
+st.subheader("⚡ Fast Movers & 🐌 Slow Movers")
 
-st.markdown("---")
+fast_movers = item_sales.head(10)
+slow_movers = item_sales.tail(10)
+
+c1, c2 = st.columns(2)
+c1.write("### 🔥 Top 10 Fast Movers")
+c1.dataframe(fast_movers)
+
+c2.write("### ❄️ Bottom 10 Slow Movers")
+c2.dataframe(slow_movers)
+
+# -----------------------------
+# 8. Full Raw Data
+# -----------------------------
+st.write("### 📄 Full Data")
+st.dataframe(df)

@@ -1,108 +1,135 @@
 import streamlit as st
 import pandas as pd
+from mlxtend.frequent_patterns import apriori, association_rules
+import matplotlib.pyplot as plt
+import seaborn as sns
 
-st.set_page_config(page_title="POS Billing Analytics", layout="wide")
+st.set_page_config(page_title="POS Analytics", layout="wide")
+st.title("🛒 POS Billing Analytics Dashboard")
 
-# -----------------------------
-# 1. Load Data (No Uploader)
-# -----------------------------
-FILE_PATH = "PosTransactionDetails.xlsx"   # <-- Replace with your actual file path
+# ----------------------------
+# LOAD DATA
+# ----------------------------
+try:
+    df = pd.read_excel("PosTransactionDetails.xlsx")
+except:
+    st.error("❌ Unable to load pos.xlsx. Make sure the file is in the app folder.")
+    st.stop()
 
-@st.cache_data
-def load_data():
-    df = pd.read_excel(FILE_PATH)
+# ----------------------------
+# CLEAN COLUMN NAMES
+# ----------------------------
+df.columns = [c.strip().lower().replace(" ", "_") for c in df.columns]
+required_cols = ["barcode", "item_name", "qty", "pos_name", "tran_no", "tran_date", "rate", "item_total"]
+for col in required_cols:
+    if col not in df.columns:
+        st.error(f"❌ Missing column in Excel: {col}")
+        st.stop()
 
-    # Normalize column names
-    df.columns = df.columns.str.strip().str.lower().str.replace(" ", "_")
-
-    # Required columns
-    required = ["barcode", "item_name", "qty", "pos_name", "tran_no", "tran_date", "rate", "item_total"]
-
-    # Verify columns
-    for col in required:
-        if col not in df.columns:
-            st.error(f"Missing column: {col}")
-            st.stop()
-
-    return df
-
-df = load_data()
+# Convert Tran Date to datetime
+df["tran_date"] = pd.to_datetime(df["tran_date"], errors="coerce")
 st.success("POS Data Loaded Successfully ✔")
 
-# -----------------------------
-# 2. Basic Metrics
-# -----------------------------
+# ----------------------------
+# POS + TRAN NO VALIDATION
+# ----------------------------
+st.subheader("⚠️ POS + Tran No Validation")
+tran_check = df.groupby(["pos_name", "tran_no"]).size().reset_index(name="item_count")
+st.dataframe(tran_check)
+
+# ----------------------------
+# KEY METRICS
+# ----------------------------
+st.subheader("📊 Key Metrics")
 total_sales = df["item_total"].sum()
+total_items = df["qty"].sum()
 total_bills = df.groupby(["pos_name", "tran_no"]).ngroups
-total_qty = df["qty"].sum()
-unique_items = df["item_name"].nunique()
-
+avg_basket_value = total_sales / total_bills
 col1, col2, col3, col4 = st.columns(4)
-col1.metric("Total Sales", round(total_sales, 2))
+col1.metric("Total Sales", f"{total_sales:,.2f}")
 col2.metric("Total Bills", total_bills)
-col3.metric("Total Quantity Sold", total_qty)
-col4.metric("Unique Items", unique_items)
+col3.metric("Total Items Sold", int(total_items))
+col4.metric("Avg Basket Value", f"{avg_basket_value:,.2f}")
 
-# -----------------------------
-# 3. Bill Level Metrics
-# -----------------------------
-bill_summary = df.groupby(["pos_name", "tran_no"]).agg(
-    bill_total=("item_total", "sum"),
-    items_in_bill=("qty", "sum")
-).reset_index()
+# ----------------------------
+# PEAK HOURS (1-HOUR)
+# ----------------------------
+st.subheader("⏰ Peak Shopping Hours (Hourly)")
+df["hour"] = df["tran_date"].dt.hour
+hourly_sales = df.groupby("hour")["item_total"].sum()
+fig, ax = plt.subplots(figsize=(12,4))
+sns.barplot(x=hourly_sales.index, y=hourly_sales.values, palette="viridis", ax=ax)
+ax.set_xlabel("Hour of Day")
+ax.set_ylabel("Total Sales")
+ax.set_title("Sales by Hour")
+st.pyplot(fig)
 
-avg_basket_value = bill_summary["bill_total"].mean()
-avg_basket_size = bill_summary["items_in_bill"].mean()
+# ----------------------------
+# HALF-HOUR INTERVAL TREND
+# ----------------------------
+st.subheader("⏱ Half-Hour Interval Sales Trend")
+df["half_hour"] = df["tran_date"].dt.floor("30T")
+half_hour_sales = df.groupby("half_hour")["item_total"].sum()
+fig, ax = plt.subplots(figsize=(12,4))
+sns.lineplot(x=half_hour_sales.index, y=half_hour_sales.values, marker="o", ax=ax)
+ax.set_xlabel("Time")
+ax.set_ylabel("Total Sales")
+ax.set_title("Sales by 30-Min Interval")
+st.pyplot(fig)
 
-st.subheader("🛍 Basket Metrics")
-col1, col2 = st.columns(2)
-col1.metric("Average Basket Value (ABV)", round(avg_basket_value, 2))
-col2.metric("Average Basket Size", round(avg_basket_size, 2))
+# ----------------------------
+# TOP SELLING ITEMS
+# ----------------------------
+st.subheader("🏆 Top Selling Items (by Sales)")
+item_sales = df.groupby("item_name")["item_total"].sum().sort_values(ascending=False)
+st.dataframe(item_sales.head(20))
 
-# -----------------------------
-# 4. POS-level Sales
-# -----------------------------
-st.subheader("🏪 POS-wise Sales")
-pos_sales = df.groupby("pos_name")["item_total"].sum().reset_index()
-st.dataframe(pos_sales)
+st.subheader("📦 Top Selling Items (by Quantity)")
+item_qty = df.groupby("item_name")["qty"].sum().sort_values(ascending=False)
+st.dataframe(item_qty.head(20))
 
-# -----------------------------
-# 5. Item-wise Sales
-# -----------------------------
-st.subheader("📦 Item-wise Sales Summary")
-item_sales = df.groupby("item_name").agg(
-    total_qty=("qty", "sum"),
-    total_sales=("item_total", "sum")
-).sort_values(by="total_sales", ascending=False).reset_index()
+# ----------------------------
+# ITEMS BOUGHT TOGETHER (MARKET BASKET ANALYSIS)
+# ----------------------------
+st.subheader("🤝 Items Bought Together (Market Basket Analysis)")
 
-st.dataframe(item_sales)
+# Prepare baskets
+basket = df.groupby(['pos_name', 'tran_no'])['item_name'].apply(list).reset_index()
+all_items = sorted(df['item_name'].unique())
+encoded = pd.DataFrame(0, index=basket.index, columns=all_items)
+for idx, items in enumerate(basket['item_name']):
+    for item in items:
+        encoded.at[idx, item] = 1
 
-# -----------------------------
-# 6. Daily Sales Trend
-# -----------------------------
-df["tran_date"] = pd.to_datetime(df["tran_date"])
-daily_sales = df.groupby("tran_date")["item_total"].sum().reset_index()
+# Apriori Algorithm
+freq_items = apriori(encoded, min_support=0.02, use_colnames=True)
+rules = association_rules(freq_items, metric="confidence", min_threshold=0.2)
+if rules.empty:
+    st.warning("Not enough data to generate association rules.")
+else:
+    rules = rules.sort_values(by="confidence", ascending=False)
+    rules["antecedents"] = rules["antecedents"].apply(lambda x: ", ".join(list(x)))
+    rules["consequents"] = rules["consequents"].apply(lambda x: ", ".join(list(x)))
+    st.write("### 🔥 Top Item Combos")
+    st.dataframe(rules[["antecedents", "consequents", "support", "confidence", "lift"]].head(20))
 
-st.subheader("📈 Daily Sales Trend")
-st.line_chart(daily_sales, x="tran_date", y="item_total")
+# ----------------------------
+# MOST FREQUENT ITEM PAIRS
+# ----------------------------
+st.subheader("🔗 Most Common Two-Item Combos")
+pair_counts = {}
+for items in basket["item_name"]:
+    items = list(set(items))
+    for i in range(len(items)):
+        for j in range(i+1, len(items)):
+            pair = tuple(sorted([items[i], items[j]]))
+            pair_counts[pair] = pair_counts.get(pair, 0) + 1
 
-# -----------------------------
-# 7. Fast Movers / Slow Movers
-# -----------------------------
-st.subheader("⚡ Fast Movers & 🐌 Slow Movers")
+pair_df = pd.DataFrame([{"Item 1": a, "Item 2": b, "Count": c} for (a,b), c in pair_counts.items()])
+pair_df = pair_df.sort_values(by="Count", ascending=False)
+st.dataframe(pair_df.head(20))
 
-fast_movers = item_sales.head(10)
-slow_movers = item_sales.tail(10)
-
-c1, c2 = st.columns(2)
-c1.write("### 🔥 Top 10 Fast Movers")
-c1.dataframe(fast_movers)
-
-c2.write("### ❄️ Bottom 10 Slow Movers")
-c2.dataframe(slow_movers)
-
-# -----------------------------
-# 8. Full Raw Data
-# -----------------------------
-st.write("### 📄 Full Data")
-st.dataframe(df)
+# ----------------------------
+# END
+# ----------------------------
+st.info("Dashboard Loaded Successfully ✔")
